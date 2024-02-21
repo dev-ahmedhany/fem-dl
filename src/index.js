@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { FEM_ENDPOINT, FEM_API_ENDPOINT, FEM_CAPTIONS_ENDPOINT, CAPTION_EXT, PLAYLIST_EXT, QUALITY_FORMAT, FEM_COURSE_REG, SUPPORTED_FORMATS, USER_AGENT } from './constants.js'
+import { FEM_ENDPOINT, FEM_API_ENDPOINT, FEM_CAPTIONS_ENDPOINT, CAPTION_EXT, PLAYLIST_EXT, QUALITY_FORMAT, FEM_COURSE_REG, SUPPORTED_FORMATS, USER_AGENT, FEM_DOWNLOADED_COURSE_URLS } from './constants.js'
 import { sleep, isPathExists, ensureDir, extendedFetch, safeJoin, formatBytes } from './util/common.js'
 import ffmpeg from './util/ffmpeg.js'
 import fs from 'node:fs/promises'
@@ -50,12 +50,13 @@ const {
     message: 'Which stream quality do you prefer?',
     choices: [2160, 1440, 1080, 720, 360].map((value) => ({ title: value + 'p', value })),
     format: v => QUALITY_FORMAT[v],
+    initial: 2,
     onState: exitOnCancel
 }, {
     type: 'select',
     message: 'Which video format you prefer?',
     name: 'EXTENSION',
-    initial: 1,
+    initial: 0,
     choices: SUPPORTED_FORMATS.map((value) => ({ title: value, value })),
     onState: exitOnCancel
 }, {
@@ -91,6 +92,9 @@ const fetch = extendedFetch({
     retryDelay: 1000
 }, cookies)
 
+for (const FEM_COURSE_URL of FEM_DOWNLOADED_COURSE_URLS) {
+
+const COURSE_SLUG = FEM_COURSE_URL.match(FEM_COURSE_REG)[2]
 const spinner = ora(`Searching for ${COURSE_SLUG}...`).start()
 const course = await fetch.json(`${FEM_API_ENDPOINT}/kabuki/courses/${COURSE_SLUG}`)
 
@@ -100,13 +104,20 @@ if (course.code === 404) {
 }
 
 
-for (const data of Object.values(course.lessonData)) course.lessonElements[course.lessonElements.findIndex(x => x === data.index)] = {
-    title: data.title,
-    slug: data.slug,
-    url: `${data.sourceBase}/source?f=${PLAYLIST_EXT}`,
-    index: data.index
+for (const data of Object.values(course.lessonData)) 
+{
+    if(!data.sourceBase)
+    {
+        console.log("sourceBase not found",data);
+        process.exit()
+    }
+    course.lessonElements[course.lessonElements.findIndex(x => x === data.index)] = {
+        title: data.title,
+        slug: data.slug,
+        url: `${data.sourceBase}/source?f=${PLAYLIST_EXT}`,
+        index: data.index
+    }
 }
-
 const [lessons, totalEpisodes] = course.lessonElements.reduce((acc, cur) => {
     if (typeof cur === 'string') (acc[0][cur] = [], acc[2] = cur)
     else (acc[0][acc[2]].push(cur), acc[1]++)
@@ -173,7 +184,7 @@ for (const [lesson, episodes] of Object.entries(lessons)) {
         const progress = new FfmpegProgress()
 
         progress.on('data', (data) => {
-            if (data.percentage && data.size) spinner.text = `[${data.percentage.toFixed()}%] Downloading ${colors.red(lessonName)}/${colors.cyan().bold(fileName)} | Size: ${formatBytes(data.size)} | Remaining: ${x}/${totalEpisodes}`
+            if (data.percentage && data.size) spinner.text = `[${data.percentage.toFixed()}%] Downloading ${colors.green(COURSE_SLUG)}/${colors.red(lessonName)}/${colors.cyan().bold(fileName)} | Size: ${formatBytes(data.size)} | Remaining: ${x}/${totalEpisodes}`
         })
 
         await ffmpeg([
@@ -190,6 +201,7 @@ for (const [lesson, episodes] of Object.entries(lessons)) {
         })
 
 
+        try {
         // Merge caption
         if (INCLUDE_CAPTION) {
             spinner.text = `Downloading captions for ${episode.title}...`
@@ -233,10 +245,16 @@ for (const [lesson, episodes] of Object.entries(lessons)) {
         } else {
             await fs.copyFile(tempFilePath, finalFilePath)
         }
+    }
+    catch (error) {
+        console.error(`failed to download caption for ${episode.title}...`)
+        await fs.copyFile(tempFilePath, finalFilePath)
+    }
 
         await fs.rm(tempFilePath).catch(() => null)
     }
 }
 
 
-spinner.succeed('Finished')
+spinner.succeed('Finished '+COURSE_SLUG)
+}
